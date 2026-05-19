@@ -420,17 +420,6 @@ function wireFilters() {
   });
 }
 
-// ---------- TOC collapse keyboard shortcuts ----------
-// [ = collapse all diplomas,  ] = expand all diplomas
-document.addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-  if (e.key === '[') {
-    document.getElementById('toc-collapse-all')?.click();
-  } else if (e.key === ']') {
-    document.getElementById('toc-expand-all')?.click();
-  }
-});
-
 // ---------- Init ----------
 build();
 buildTOC();
