@@ -327,7 +327,7 @@ function buildTOC() {
         const status = articleStatus(r2.left, r2.right);
         if (status === 'identical') return;
         const sample = r2.right || r2.left;
-        const sub = sample?.subtitle || '';
+        const sub = r2.right?.subtitle || r2.left?.subtitle || '';
         const num = sample?.articleNum || '';
         let tag = '';
         if (status === 'changed') tag = '<span class="toc-tag changed">±</span>';
