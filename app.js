@@ -118,11 +118,26 @@ function diffBodies(leftBody, rightBody) {
   return { left: finalize(leftMD), right: finalize(rightMD) };
 }
 
+// Aggressive normalization used only for identical/changed classification.
+// Strips ellipsis noise (variant forms, trailing periods, leading preamble
+// ellipsis, and numbered items whose entire content is an ellipsis placeholder)
+// and collapses all whitespace so formatting-only differences don't produce
+// false "changed" status.
+function bodyForStatus(s) {
+  return normalizeEllipsis(s || '')
+    .replace(/\[…\]\./g, '[…]')
+    .replace(/^\[…\]\s*\n+/m, '')
+    .replace(/\n\d+\s*—\s*\[…\]/g, '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n+/g, '\n')
+    .trim();
+}
+
 // ---------- Status classification ----------
 function articleStatus(left, right) {
   if (left && right) {
-    const a = bodyForDiff(left.body);
-    const b = bodyForDiff(right.body);
+    const a = bodyForStatus(left.body);
+    const b = bodyForStatus(right.body);
     if (a === b) return 'identical';
     return 'changed';
   }
