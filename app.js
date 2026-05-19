@@ -156,6 +156,7 @@ function statusLabel(status, mode) {
 
 // ---------- Rendering ----------
 const compareEl = document.getElementById('compare');
+const gridEl = document.getElementById('grid');
 const tocEl = document.getElementById('toc');
 
 function articleHeader(item, side) {
@@ -294,7 +295,7 @@ function build() {
     else if (row.kind === 'revogatoria') html += renderRowToplevel(row, 'revogatoria', idx);
     else if (row.kind === 'aplicacao') html += renderRowToplevel(row, 'aplicacao', idx);
   });
-  compareEl.innerHTML = html;
+  gridEl.innerHTML = html;
 }
 
 function buildTOC() {
