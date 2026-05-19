@@ -300,6 +300,13 @@ function build() {
 
 function buildTOC() {
   let html = '';
+
+  // Collapse All / Expand All controls
+  html += `<div class="toc-controls">
+    <button class="toc-ctrl-btn" id="toc-collapse-all">Recolher tudo</button>
+    <button class="toc-ctrl-btn" id="toc-expand-all">Expandir tudo</button>
+  </div>`;
+
   // Top: preamble + objeto
   html += `<div class="toc-section">
     <div class="toc-section-head" data-target="r-0"><span class="toc-section-dot"></span>Preâmbulo</div>
@@ -314,11 +321,12 @@ function buildTOC() {
       const stats = diplomaArticleStats(DATA.rows, row.diploma.key, row.mode);
       const modeTag = row.mode === 'addition' ? 'Aditamento' : 'Alteração';
       const dotColor = row.mode === 'addition' ? 'var(--add-rule)' : 'var(--accent-right)';
-      html += `<div class="toc-section">
-        <div class="toc-section-head" data-target="r-${idx}">
+      html += `<div class="toc-section toc-collapsible">
+        <div class="toc-section-head toc-section-toggle" data-target="r-${idx}">
           <span class="toc-section-dot" style="background:${dotColor}"></span>
           ${row.diploma.key} · ${modeTag}
           <span class="toc-section-count">${stats.total}</span>
+          <span class="toc-chevron" aria-hidden="true">▾</span>
         </div>
         <div class="toc-items">`;
       DATA.rows.forEach((r2, i2) => {
@@ -352,7 +360,17 @@ function buildTOC() {
 
   tocEl.innerHTML = html;
 
+  // Collapse/expand toggle on diploma sections — chevron toggles, rest scrolls
   tocEl.addEventListener('click', e => {
+    if (e.target.closest('.toc-chevron')) {
+      const section = e.target.closest('.toc-collapsible');
+      if (section) {
+        const isCollapsed = section.classList.toggle('is-collapsed');
+        section.querySelector('.toc-chevron').textContent = isCollapsed ? '▸' : '▾';
+        return;
+      }
+    }
+
     const t = e.target.closest('[data-target]');
     if (!t) return;
     const el = document.getElementById(t.dataset.target);
@@ -360,6 +378,20 @@ function buildTOC() {
       const y = el.getBoundingClientRect().top + window.scrollY - 130;
       window.scrollTo({ top: y, behavior: 'smooth' });
     }
+  });
+
+  // Collapse All / Expand All
+  document.getElementById('toc-collapse-all').addEventListener('click', () => {
+    tocEl.querySelectorAll('.toc-collapsible').forEach(sec => {
+      sec.classList.add('is-collapsed');
+      sec.querySelector('.toc-chevron').textContent = '▸';
+    });
+  });
+  document.getElementById('toc-expand-all').addEventListener('click', () => {
+    tocEl.querySelectorAll('.toc-collapsible').forEach(sec => {
+      sec.classList.remove('is-collapsed');
+      sec.querySelector('.toc-chevron').textContent = '▾';
+    });
   });
 }
 
@@ -387,6 +419,17 @@ function wireFilters() {
     });
   });
 }
+
+// ---------- TOC collapse keyboard shortcuts ----------
+// [ = collapse all diplomas,  ] = expand all diplomas
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === '[') {
+    document.getElementById('toc-collapse-all')?.click();
+  } else if (e.key === ']') {
+    document.getElementById('toc-expand-all')?.click();
+  }
+});
 
 // ---------- Init ----------
 build();
