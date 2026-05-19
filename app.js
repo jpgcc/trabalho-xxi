@@ -240,19 +240,19 @@ function renderRowPreamble(row, idx) {
 }
 
 function diplomaArticleStats(rows, dKey, mode) {
-  let total = 0, changed = 0, added = 0, removed = 0, identical = 0;
+  let total = 0, changed = 0, added = 0, removed = 0;
   rows.forEach(r => {
     if (r.kind !== 'article') return;
     if (r.diploma?.key !== dKey) return;
     if (r.mode !== mode) return;
-    total++;
     const s = articleStatus(r.left, r.right);
+    if (s === 'identical') return;
+    total++;
     if (s === 'changed') changed++;
     else if (s === 'right-only') added++;
     else if (s === 'left-only') removed++;
-    else if (s === 'identical') identical++;
   });
-  return { total, changed, added, removed, identical };
+  return { total, changed, added, removed };
 }
 
 function renderSectionBanner(row, idx) {
@@ -276,7 +276,6 @@ function renderSectionBanner(row, idx) {
           ${stats.changed ? `<span><span class="pip" style="background:#B8651E"></span><b>${stats.changed}</b> alterado${stats.changed === 1 ? '' : 's'}</span>` : ''}
           ${stats.added ? `<span><span class="pip" style="background:var(--add-rule)"></span><b>${stats.added}</b> só na proposta</span>` : ''}
           ${stats.removed ? `<span><span class="pip" style="background:var(--del-rule)"></span><b>${stats.removed}</b> só no anteprojeto</span>` : ''}
-          ${stats.identical ? `<span><span class="pip" style="background:var(--identical-tag)"></span><b>${stats.identical}</b> igual</span>` : ''}
         </div>
       </div>
     </div>`;
@@ -289,7 +288,9 @@ function build() {
     if (row.kind === 'preamble') html += renderRowPreamble(row, idx);
     else if (row.kind === 'objeto') html += renderRowToplevel(row, 'objeto', idx);
     else if (row.kind === 'group-banner') html += renderSectionBanner(row, idx);
-    else if (row.kind === 'article') html += renderRowArticle(row, idx);
+    else if (row.kind === 'article') {
+      if (articleStatus(row.left, row.right) !== 'identical') html += renderRowArticle(row, idx);
+    }
     else if (row.kind === 'revogatoria') html += renderRowToplevel(row, 'revogatoria', idx);
     else if (row.kind === 'aplicacao') html += renderRowToplevel(row, 'aplicacao', idx);
   });
@@ -324,6 +325,7 @@ function buildTOC() {
         if (r2.diploma?.key !== row.diploma.key) return;
         if (r2.mode !== row.mode) return;
         const status = articleStatus(r2.left, r2.right);
+        if (status === 'identical') return;
         const sample = r2.right || r2.left;
         const sub = sample?.subtitle || '';
         const num = sample?.articleNum || '';
@@ -331,7 +333,6 @@ function buildTOC() {
         if (status === 'changed') tag = '<span class="toc-tag changed">±</span>';
         else if (status === 'right-only') tag = '<span class="toc-tag added">+</span>';
         else if (status === 'left-only') tag = '<span class="toc-tag removed">−</span>';
-        else if (status === 'identical') tag = '<span class="toc-tag same">=</span>';
         html += `<div class="toc-item" data-target="r-${i2}" data-status="${status}">
           <span class="toc-num">${escapeHTML(num)}</span>
           <span class="toc-label">${escapeHTML(sub)}</span>
