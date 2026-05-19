@@ -290,7 +290,7 @@ function build() {
     else if (row.kind === 'objeto') html += renderRowToplevel(row, 'objeto', idx);
     else if (row.kind === 'group-banner') html += renderSectionBanner(row, idx);
     else if (row.kind === 'article') {
-      if (articleStatus(row.left, row.right) !== 'identical') html += renderRowArticle(row, idx);
+      html += renderRowArticle(row, idx);
     }
     else if (row.kind === 'revogatoria') html += renderRowToplevel(row, 'revogatoria', idx);
     else if (row.kind === 'aplicacao') html += renderRowToplevel(row, 'aplicacao', idx);
@@ -334,7 +334,6 @@ function buildTOC() {
         if (r2.diploma?.key !== row.diploma.key) return;
         if (r2.mode !== row.mode) return;
         const status = articleStatus(r2.left, r2.right);
-        if (status === 'identical') return;
         const sample = r2.right || r2.left;
         const sub = r2.right?.subtitle || r2.left?.subtitle || '';
         const num = sample?.articleNum || '';
