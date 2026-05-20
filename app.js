@@ -423,6 +423,12 @@ function normalizeBullets(body) {
   // Line-start sub-items that are bare ("a) text") or already-dashed without
   // italics ("- a) text") → canonical "- *X)* text".
   s = s.replace(/^[ \t]*-?[ \t]*\*?([a-z])\)\*?[ \t]+/gm, '- *$1)* ');
+  // Some proposta bodies bunch consecutive numbered paragraphs onto adjacent
+  // lines ("1 — […].\n2 — […].\n3 — […]:"). Force a blank line before each
+  // "N — " so parseParagraph sees one paragraph per number — otherwise the
+  // whole run becomes a single paragraph with num=1 and the ellipsis
+  // alignment skips it.
+  s = s.replace(/(?<!\n)\n(\d+\s*—\s)/g, '\n\n$1');
   // Collapse runs of blank lines.
   s = s.replace(/\n{3,}/g, '\n\n');
   return s;
@@ -864,9 +870,12 @@ function buildTOC() {
                   : row.mode === 'addition' ? 'var(--add-rule)'
                   : row.mode === 'revogacao' ? 'var(--del-rule)'
                   : 'var(--accent-right)';
+    // Use the diploma name (truncated before " — " subtitle) rather than the
+    // short key so the TOC reads "Código do Trabalho" instead of "CT".
+    const shortName = (row.diploma.label || row.diploma.key).split(' — ')[0];
     const heading = isMerged
-      ? `${row.diploma.key}`
-      : `${row.diploma.key} · ${row.mode === 'addition' ? 'Aditamento' : row.mode === 'revogacao' ? 'Revogação' : 'Alteração'}`;
+      ? shortName
+      : `${shortName} · ${row.mode === 'addition' ? 'Aditamento' : row.mode === 'revogacao' ? 'Revogação' : 'Alteração'}`;
     html += `<div class="toc-section toc-collapsible">
       <div class="toc-section-head toc-section-toggle" data-target="r-${idx}">
         <span class="toc-section-dot" style="background:${dotColor}"></span>
