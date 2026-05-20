@@ -4,8 +4,18 @@ import { marked } from 'https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.es
 import { diffWordsWithSpace } from 'https://cdn.jsdelivr.net/npm/diff@5.2.0/+esm';
 
 // ---------- Data ----------
-const DATA = JSON.parse(document.getElementById('__data').textContent);
-const IN_FORCE = JSON.parse(document.getElementById('__data-em-vigor').textContent);
+// Pretty-printed JSON files are fetched at load. The em-vigor side keeps the
+// per-source split it scrapes into; we recombine the two files into the same
+// shape app.js expects: { CT: {...}, "L107-2009": {...}, … }.
+const [DATA, ctEmVigor, othersEmVigor] = await Promise.all([
+  fetch('data/proposta.json').then(r => r.json()),
+  fetch('data/ct-em-vigor.json').then(r => r.json()),
+  fetch('data/em-vigor-others.json').then(r => r.json()),
+]);
+const IN_FORCE = {
+  CT: { source: ctEmVigor.source, scrapedAt: ctEmVigor.scrapedAt, articles: ctEmVigor.articles },
+  ...othersEmVigor,
+};
 
 // ---------- Left-column source toggle ----------
 const LS_KEY = 'reformaLaboral.leftSource';
@@ -13,15 +23,18 @@ let leftSource = localStorage.getItem(LS_KEY) === 'em-vigor' ? 'em-vigor' : 'ant
 
 // What the left column should actually show for a given row, given the toggle.
 // Returns null when the toggle is "em-vigor" but no in-force text is available
-// for this row (non-CT diploma, or CT addition-mode article).
+// (addition-mode article, diploma not scraped, or article not in the scraped
+// subset).
 function effectiveLeft(row) {
   if (leftSource === 'anteprojeto') return row.left;
   if (row.kind !== 'article') return row.left;
-  if (row.diploma?.key !== 'CT') return null;
   if (row.mode === 'addition') return null;
+  const dipKey = row.diploma?.key;
+  const diploma = dipKey && IN_FORCE[dipKey];
+  if (!diploma) return null;
   const num = row.right?.articleNum || row.left?.articleNum;
   if (!num) return null;
-  const art = IN_FORCE.articles[num];
+  const art = diploma.articles?.[num];
   if (!art) return null;
   return {
     ...(row.left || {}),
@@ -41,8 +54,9 @@ function shouldRenderRow(row) {
 }
 
 function emVigorPlaceholderText(row) {
-  if (row.diploma?.key !== 'CT') return 'texto em vigor ainda não disponível para este diploma';
   if (row.mode === 'addition') return 'artigo aditado pela Proposta — sem texto em vigor';
+  const dipKey = row.diploma?.key;
+  if (!dipKey || !IN_FORCE[dipKey]) return 'texto em vigor ainda não disponível para este diploma';
   return 'texto em vigor não encontrado';
 }
 
@@ -957,8 +971,9 @@ function updateLeftHeaderText() {
   const meta = document.getElementById('left-doc-meta');
   const appbar = document.getElementById('appbar-title');
   if (leftSource === 'em-vigor') {
-    title.textContent = 'Código do Trabalho (em vigor)';
-    meta.innerHTML = `Fonte: <a href="${IN_FORCE.source}" target="_blank" rel="noopener">pgdlisboa.pt</a> · consultado ${IN_FORCE.scrapedAt}`;
+    title.textContent = 'Legislação em vigor';
+    const ct = IN_FORCE.CT || {};
+    meta.innerHTML = `Fonte principal: <a href="${ct.source}" target="_blank" rel="noopener">pgdlisboa.pt</a> · consultado ${ct.scrapedAt}`;
     appbar.innerHTML = 'Em vigor &nbsp;→&nbsp; Proposta de Lei <em>19 mai 2026</em>';
   } else {
     title.textContent = 'Trabalho XXI';

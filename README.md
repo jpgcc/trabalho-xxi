@@ -7,7 +7,7 @@ Ferramenta de consulta que coloca lado a lado as duas versões da reforma labora
 
 Para cada artigo é mostrado o texto de ambas as versões e realçadas, palavra a palavra, as diferenças entre elas. É possível filtrar por artigos alterados, artigos que só existem numa das versões, ou pesquisar por texto.
 
-A aplicação corre inteiramente no browser, sem servidor nem base de dados. Os dados estão incorporados diretamente no ficheiro `index.html`.
+A aplicação corre inteiramente no browser, sem servidor nem base de dados. Os dados são ficheiros JSON em `data/` carregados em runtime — para pré-visualizar localmente é necessário servir o diretório por HTTP (e.g. `python3 -m http.server`), porque `file://` bloqueia `fetch`.
 
 ## Aviso
 
