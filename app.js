@@ -5,6 +5,46 @@ import { diffWordsWithSpace } from 'https://cdn.jsdelivr.net/npm/diff@5.2.0/+esm
 
 // ---------- Data ----------
 const DATA = JSON.parse(document.getElementById('__data').textContent);
+const IN_FORCE = JSON.parse(document.getElementById('__data-em-vigor').textContent);
+
+// ---------- Left-column source toggle ----------
+const LS_KEY = 'reformaLaboral.leftSource';
+let leftSource = localStorage.getItem(LS_KEY) === 'em-vigor' ? 'em-vigor' : 'anteprojeto';
+
+// What the left column should actually show for a given row, given the toggle.
+// Returns null when the toggle is "em-vigor" but no in-force text is available
+// for this row (non-CT diploma, or CT addition-mode article).
+function effectiveLeft(row) {
+  if (leftSource === 'anteprojeto') return row.left;
+  if (row.kind !== 'article') return row.left;
+  if (row.diploma?.key !== 'CT') return null;
+  if (row.mode === 'addition') return null;
+  const num = row.right?.articleNum || row.left?.articleNum;
+  if (!num) return null;
+  const art = IN_FORCE.articles[num];
+  if (!art) return null;
+  return {
+    ...(row.left || {}),
+    articleNum: num,
+    body: art.body,
+    subtitle: art.subtitle || row.left?.subtitle || '',
+  };
+}
+
+// When toggled to em-vigor, the Proposta-only context rows (Exposição de
+// motivos, Objeto) have no counterpart in current law — skip them entirely.
+function shouldRenderRow(row) {
+  if (leftSource !== 'em-vigor') return true;
+  if (row.kind === 'preamble') return false;
+  if (row.kind === 'objeto') return false;
+  return true;
+}
+
+function emVigorPlaceholderText(row) {
+  if (row.diploma?.key !== 'CT') return 'texto em vigor ainda não disponível para este diploma';
+  if (row.mode === 'addition') return 'artigo aditado pela Proposta — sem texto em vigor';
+  return 'texto em vigor não encontrado';
+}
 
 // ---------- Helpers ----------
 function normalizeEllipsis(s) {
@@ -173,26 +213,32 @@ function articleHeader(item, side) {
 }
 
 function renderRowArticle(row, idx) {
-  const status = articleStatus(row.left, row.right);
+  const left = effectiveLeft(row);
+  const status = articleStatus(left, row.right);
   const lbl = statusLabel(status, row.mode);
   const ariaId = `r-${idx}`;
 
   let leftHTML = '', rightHTML = '';
-  if (row.left && row.right) {
-    const { left, right } = diffBodies(row.left.body, row.right.body);
-    leftHTML = left;
-    rightHTML = right;
-  } else if (row.left) {
-    leftHTML = decorateBody(renderMarkdown(bodyForDiff(row.left.body)));
+  if (left && row.right) {
+    const d = diffBodies(left.body, row.right.body);
+    leftHTML = d.left;
+    rightHTML = d.right;
+  } else if (left) {
+    leftHTML = decorateBody(renderMarkdown(bodyForDiff(left.body)));
   } else if (row.right) {
     rightHTML = decorateBody(renderMarkdown(bodyForDiff(row.right.body)));
   }
 
-  const classes = `row kind-article is-${status === 'identical' ? 'identical' : status === 'changed' ? 'changed' : status === 'left-only' ? 'leftonly' : 'rightonly'} ${row.left && row.right ? 'is-both' : ''} status-${status}`;
+  const classes = `row kind-article is-${status === 'identical' ? 'identical' : status === 'changed' ? 'changed' : status === 'left-only' ? 'leftonly' : 'rightonly'} ${left && row.right ? 'is-both' : ''} status-${status}`;
 
-  const leftCell = row.left
-    ? `<div class="cell left">${articleHeader(row.left, 'left')}<div class="cell-body">${leftHTML}</div></div>`
-    : `<div class="cell left empty">sem correspondência no Anteprojeto</div>`;
+  let leftCell;
+  if (left) {
+    leftCell = `<div class="cell left">${articleHeader(left, 'left')}<div class="cell-body">${leftHTML}</div></div>`;
+  } else if (leftSource === 'em-vigor' && row.kind === 'article') {
+    leftCell = `<div class="cell left empty placeholder-em-vigor">${emVigorPlaceholderText(row)}</div>`;
+  } else {
+    leftCell = `<div class="cell left empty">sem correspondência no Anteprojeto</div>`;
+  }
 
   const rightCell = row.right
     ? `<div class="cell right">${articleHeader(row.right, 'right')}<div class="cell-body">${rightHTML}</div></div>`
@@ -246,7 +292,7 @@ function diplomaArticleStats(rows, dKey, mode) {
     if (r.kind !== 'article') return;
     if (r.diploma?.key !== dKey) return;
     if (r.mode !== mode) return;
-    const s = articleStatus(r.left, r.right);
+    const s = articleStatus(effectiveLeft(r), r.right);
     if (s === 'identical') return;
     total++;
     if (s === 'changed') changed++;
@@ -286,6 +332,7 @@ function renderSectionBanner(row, idx) {
 function build() {
   let html = '';
   DATA.rows.forEach((row, idx) => {
+    if (!shouldRenderRow(row)) return;
     if (row.kind === 'preamble') html += renderRowPreamble(row, idx);
     else if (row.kind === 'objeto') html += renderRowToplevel(row, 'objeto', idx);
     else if (row.kind === 'group-banner') html += renderSectionBanner(row, idx);
@@ -307,13 +354,15 @@ function buildTOC() {
     <button class="toc-ctrl-btn" id="toc-expand-all">Expandir tudo</button>
   </div>`;
 
-  // Top: preamble + objeto
-  html += `<div class="toc-section">
-    <div class="toc-section-head" data-target="r-0"><span class="toc-section-dot"></span>Preâmbulo</div>
-  </div>`;
-  html += `<div class="toc-section">
-    <div class="toc-section-head" data-target="r-1"><span class="toc-section-dot"></span>Objeto</div>
-  </div>`;
+  // Top: preamble + objeto (hidden in em-vigor mode — no current-law counterpart)
+  if (leftSource !== 'em-vigor') {
+    html += `<div class="toc-section">
+      <div class="toc-section-head" data-target="r-0"><span class="toc-section-dot"></span>Preâmbulo</div>
+    </div>`;
+    html += `<div class="toc-section">
+      <div class="toc-section-head" data-target="r-1"><span class="toc-section-dot"></span>Objeto</div>
+    </div>`;
+  }
 
   // For each group banner, list its articles
   DATA.rows.forEach((row, idx) => {
@@ -333,9 +382,10 @@ function buildTOC() {
         if (r2.kind !== 'article') return;
         if (r2.diploma?.key !== row.diploma.key) return;
         if (r2.mode !== row.mode) return;
-        const status = articleStatus(r2.left, r2.right);
-        const sample = r2.right || r2.left;
-        const sub = r2.right?.subtitle || r2.left?.subtitle || '';
+        const r2Left = effectiveLeft(r2);
+        const status = articleStatus(r2Left, r2.right);
+        const sample = r2.right || r2Left;
+        const sub = r2.right?.subtitle || r2Left?.subtitle || '';
         const num = sample?.articleNum || '';
         let tag = '';
         if (status === 'changed') tag = '<span class="toc-tag changed">±</span>';
@@ -419,16 +469,53 @@ function wireFilters() {
   });
 }
 
-// ---------- Init ----------
-build();
-buildTOC();
-wireFilters();
+// ---------- Left-source toggle wiring ----------
+function updateLeftHeaderText() {
+  const title = document.getElementById('left-doc-title');
+  const meta = document.getElementById('left-doc-meta');
+  const appbar = document.getElementById('appbar-title');
+  if (leftSource === 'em-vigor') {
+    title.textContent = 'Código do Trabalho (em vigor)';
+    meta.innerHTML = `Fonte: <a href="${IN_FORCE.source}" target="_blank" rel="noopener">pgdlisboa.pt</a> · consultado ${IN_FORCE.scrapedAt}`;
+    appbar.innerHTML = 'Em vigor &nbsp;→&nbsp; Proposta de Lei <em>19 mai 2026</em>';
+  } else {
+    title.textContent = 'Trabalho XXI';
+    meta.textContent = 'Proposta do Governo · 24 Jul 2025 · 60 pp.';
+    appbar.innerHTML = 'Anteprojeto <em>24 jul 2025</em> &nbsp;→&nbsp; Proposta de Lei <em>19 mai 2026</em>';
+  }
+}
 
-// Active TOC item on scroll
-const rowEls = [...document.querySelectorAll('.row[id]')];
-const tocItems = [...document.querySelectorAll('.toc-item, .toc-section-head')];
-const tocByTarget = Object.fromEntries(tocItems.map(t => [t.dataset.target, t]));
+function setLeftSource(src) {
+  if (src !== 'anteprojeto' && src !== 'em-vigor') return;
+  if (src === leftSource) return;
+  leftSource = src;
+  localStorage.setItem(LS_KEY, src);
+  document.querySelectorAll('[data-left-source]').forEach(b => {
+    const active = b.dataset.leftSource === src;
+    b.classList.toggle('is-active', active);
+    b.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  updateLeftHeaderText();
+  build();
+  buildTOC();
+  rebindScrollRefs();
+  activeKey = null;
+  updateActive();
+}
+
+document.querySelectorAll('[data-left-source]').forEach(b => {
+  b.addEventListener('click', () => setLeftSource(b.dataset.leftSource));
+});
+
+// Active TOC item on scroll. Refs are rebound after every full re-render.
+let rowEls = [];
+let tocByTarget = {};
 let activeKey = null;
+function rebindScrollRefs() {
+  rowEls = [...document.querySelectorAll('.row[id]')];
+  const tocItems = [...document.querySelectorAll('.toc-item, .toc-section-head')];
+  tocByTarget = Object.fromEntries(tocItems.map(t => [t.dataset.target, t]));
+}
 function updateActive() {
   const y = window.scrollY + 200;
   let active = null;
@@ -441,7 +528,6 @@ function updateActive() {
     activeKey = active;
     if (activeKey && tocByTarget[activeKey]) {
       tocByTarget[activeKey].classList.add('is-active');
-      // scroll TOC into view if needed
       const tocItem = tocByTarget[activeKey];
       const tocRect = tocItem.getBoundingClientRect();
       if (tocRect.top < 100 || tocRect.bottom > window.innerHeight - 50) {
@@ -457,4 +543,18 @@ window.addEventListener('scroll', () => {
     requestAnimationFrame(() => { updateActive(); scrollPending = false; });
   }
 }, { passive: true });
+
+// ---------- Init ----------
+// Reflect persisted leftSource on the toggle buttons before first render so
+// the active class doesn't briefly flash on the wrong button.
+document.querySelectorAll('[data-left-source]').forEach(b => {
+  const active = b.dataset.leftSource === leftSource;
+  b.classList.toggle('is-active', active);
+  b.setAttribute('aria-selected', active ? 'true' : 'false');
+});
+updateLeftHeaderText();
+build();
+buildTOC();
+wireFilters();
+rebindScrollRefs();
 updateActive();

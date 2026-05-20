@@ -328,6 +328,39 @@ body {
   font-size: 11px;
   color: var(--muted);
 }
+.doc-header-meta a { color: inherit; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.doc-header-meta a:hover { color: var(--ink); }
+
+/* Segmented control inside left doc-header */
+.doc-header-toggle {
+  display: inline-flex;
+  align-self: flex-start;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 2px;
+}
+.doc-header-toggle-btn {
+  background: transparent;
+  border: none;
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 5px 10px;
+  cursor: pointer;
+  border-right: 1px solid var(--rule);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.doc-header-toggle-btn:last-child { border-right: none; }
+.doc-header-toggle-btn:hover { background: var(--paper-2); color: var(--ink-2); }
+.doc-header-toggle-btn.is-active {
+  background: var(--accent-left);
+  color: var(--paper);
+}
 
 /* === Grid of rows === */
 .grid {
@@ -395,6 +428,19 @@ body {
 }
 .row.kind-article .cell.empty:nth-child(1) { border-left: 3px solid var(--del-rule); }
 .row.kind-article .cell.empty:nth-child(2) { border-left: 3px solid var(--add-rule); }
+
+/* "Em vigor" placeholder: softer than the existing empty hatch so it reads as
+   "not yet available" rather than "no corresponding article". */
+.row.kind-article .cell.empty.placeholder-em-vigor:nth-child(1) {
+  border-left: 3px solid var(--accent-left);
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--paper) 0 10px,
+    rgba(138, 109, 44, 0.06) 10px 20px
+  );
+  color: var(--ink-2);
+}
+.row.kind-article .cell.empty.placeholder-em-vigor::before { display: none; }
 
 /* === Cell headers === */
 .cell-header {
