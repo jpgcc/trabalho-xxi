@@ -196,6 +196,8 @@ function synthesizeRevogRows(key, label, items) {
       kind: 'article',
       diploma: { key, label, mode: 'revogacao' },
       mode: 'revogacao',
+      _revogScopes: scopes,                              // preserved for dedup merge
+      _revogIsFull: isFull,
       left: null,
       right: {
         articleNum: num,
@@ -304,7 +306,33 @@ function mergeDiplomaSections() {
     other.push(r);
   }
 
+  // Dedup: a synthesised revogação row for (diploma, article) is redundant
+  // when a non-revogação row already exists for that same article — the
+  // existing modification/addition row already encodes the revocation (either
+  // as a left-only row or via inline [Revogado] markers in its body). Drop
+  // the synthesised row and attach its scope info to the keeper as metadata
+  // so the renderer can surface the Art. 14.º attribution.
   for (const [, info] of diplomaInfo) {
+    const byNum = new Map();
+    for (const r of info.articles) {
+      const num = r.right?.articleNum || r.left?.articleNum;
+      if (!num) continue;
+      if (!byNum.has(num)) byNum.set(num, []);
+      byNum.get(num).push(r);
+    }
+    const toDrop = new Set();
+    for (const [, rows] of byNum) {
+      if (rows.length < 2) continue;
+      const revog = rows.find(r => r.mode === 'revogacao');
+      const others = rows.filter(r => r.mode !== 'revogacao');
+      if (!revog || !others.length) continue;
+      const keeper = others[0];
+      keeper._revogScopes = revog._revogScopes || null;
+      keeper._revogIsFull = revog._revogIsFull || false;
+      toDrop.add(revog);
+    }
+    info.articles = info.articles.filter(r => !toDrop.has(r));
+
     info.articles.sort((a, b) => compareArticleNums(
       a.right?.articleNum || a.left?.articleNum,
       b.right?.articleNum || b.left?.articleNum,
@@ -363,6 +391,131 @@ function decorateBody(html) {
   return html;
 }
 
+// ---------- Ellipsis alignment for diff ----------
+// In the dataset, "[…]" means "this part is unchanged from the other side"
+// (a placeholder, not literal content). Naive word-diff treats it as a token
+// and ends up marking all the corresponding real text on the other side as
+// deleted. Before diffing we (1) normalise the sub-item bullet style on both
+// sides to the markdown-list form ("- *X)* …"), then (2) substitute every
+// "[…]"-only paragraph and sub-item on the *right* with the matching content
+// from the *left*. The diff then sees mostly-identical text plus only the
+// genuine changes.
+
+function normalizeBullets(body) {
+  let s = body;
+  // After ":" or ";" (across any whitespace, including newlines): pull
+  // sub-items onto their own line in markdown-list form.
+  s = s.replace(/([:;])\s*(?:-\s*)?\*?([a-z])\)\*?[ \t]+/g, '$1\n- *$2)* ');
+  // Line-start sub-items that are bare ("a) text") or already-dashed without
+  // italics ("- a) text") → canonical "- *X)* text".
+  s = s.replace(/^[ \t]*-?[ \t]*\*?([a-z])\)\*?[ \t]+/gm, '- *$1)* ');
+  // Collapse runs of blank lines.
+  s = s.replace(/\n{3,}/g, '\n\n');
+  return s;
+}
+
+// True if the string (after trimming) is just "[…]" — optionally followed
+// by punctuation like ".", ":" or ";".
+function isEllipsisOnly(s) {
+  return /^\s*\[…\][.:;]?\s*$/.test(s);
+}
+
+// Pull the leading "[…]" placeholder off a string, preserving any trailing
+// punctuation. Returns null if the string doesn't start with the placeholder.
+function stripLeadingEllipsis(s) {
+  const m = s.match(/^\s*\[…\]([.:;]?)\s*([\s\S]*)$/);
+  return m ? { punct: m[1], rest: m[2] } : null;
+}
+
+function parseParagraph(p) {
+  // Returns { num, intro, subItems, raw }. `num` is null for non-numbered
+  // paragraphs (preamble / dangling ellipsis). Sub-items are the markdown
+  // bullets produced by normalizeBullets.
+  const headerMatch = p.match(/^(\d+)\s*—\s*([\s\S]*)$/);
+  if (!headerMatch) return { num: null, intro: p.trim(), subItems: [], raw: p };
+  const num = headerMatch[1];
+  const rest = headerMatch[2];
+  const subStart = rest.search(/(?:^|\n)- \*[a-z]\)\*/);
+  let intro, subSegment;
+  if (subStart >= 0) {
+    intro = rest.slice(0, subStart).trim();
+    subSegment = rest.slice(subStart).trim();
+  } else {
+    intro = rest.trim();
+    subSegment = '';
+  }
+  const subItems = [];
+  if (subSegment) {
+    const RE = /^- \*([a-z])\)\*[ \t]*([\s\S]*?)(?=\n- \*[a-z]\)\*|$)/gm;
+    let mm;
+    while ((mm = RE.exec(subSegment)) !== null) {
+      subItems.push({ letter: mm[1], content: mm[2].trim() });
+    }
+  }
+  return { num, intro, subItems, raw: p };
+}
+
+function reassembleParagraph(p) {
+  if (p.num == null) return p.intro;
+  const head = `${p.num} — ${p.intro}`;
+  if (!p.subItems.length) return head;
+  const list = p.subItems.map(s => `- *${s.letter})* ${s.content}`).join('\n');
+  return `${head}\n${list}`;
+}
+
+function expandEllipsisOneWay(target, source) {
+  const srcByNum = new Map();
+  for (const sp of source.split(/\n{2,}/).map(parseParagraph)) {
+    if (sp.num != null) srcByNum.set(sp.num, sp);
+  }
+  return target.split(/\n{2,}/).map(parseParagraph).map(tp => {
+    if (tp.num == null) return tp.raw;                  // preamble / orphan
+    const sp = srcByNum.get(tp.num);
+    if (!sp) return tp.raw;
+
+    // If the whole paragraph is just "[…]" with no sub-items, the placeholder
+    // stands for both the intro AND any sub-items the source has — replace
+    // the paragraph wholesale.
+    if (isEllipsisOnly(tp.intro) && tp.subItems.length === 0) {
+      tp.intro = sp.intro;
+      tp.subItems = sp.subItems.map(s => ({ ...s }));
+      return reassembleParagraph(tp);
+    }
+
+    // Otherwise: substitute intro and/or individual sub-items selectively.
+    if (isEllipsisOnly(tp.intro)) {
+      const stripped = stripLeadingEllipsis(tp.intro);
+      const punct = stripped ? stripped.punct : '';
+      tp.intro = sp.intro;
+      if (punct && !/[.:;]$/.test(tp.intro)) tp.intro += punct;
+    }
+    for (const it of tp.subItems) {
+      if (isEllipsisOnly(it.content)) {
+        const srcIt = sp.subItems.find(s => s.letter === it.letter);
+        if (srcIt) {
+          const stripped = stripLeadingEllipsis(it.content);
+          const punct = stripped ? stripped.punct : '';
+          let src = srcIt.content;
+          if (punct && !/[.:;]$/.test(src)) src += punct;
+          it.content = src;
+        }
+      }
+    }
+    return reassembleParagraph(tp);
+  }).join('\n\n');
+}
+
+function expandEllipsisAlignment(leftBody, rightBody) {
+  const leftN  = normalizeBullets(leftBody);
+  const rightN = normalizeBullets(rightBody);
+  // Right is the main target — most ellipses live there. Also handle the
+  // less-common reverse case so a "[…]" on the left gets substituted from
+  // the right where available.
+  const right = expandEllipsisOneWay(rightN, leftN);
+  const left  = expandEllipsisOneWay(leftN,  rightN);
+  return { left, right };
+}
+
 // Word-level diff between two MD bodies — returns {leftHTML, rightHTML} of the BODY only.
 // We diff the markdown text directly and re-render. Diff tokens are wrapped with
 // invisible sentinels so we can map them onto rendered HTML afterward — simpler approach:
@@ -370,11 +523,18 @@ function decorateBody(html) {
 // right markdown string (kept+added), render each via marked, wrap added/removed runs
 // with <ins>/<del>.
 function diffBodies(leftBody, rightBody) {
-  const A = bodyForDiff(leftBody);
-  const B = bodyForDiff(rightBody);
+  let A = bodyForDiff(leftBody);
+  let B = bodyForDiff(rightBody);
   if (!A && !B) return { left: '', right: '' };
   if (!A) return { left: '', right: decorateBody(renderMarkdown(B)) };
   if (!B) return { left: decorateBody(renderMarkdown(A)), right: '' };
+
+  // Pre-process: normalise bullet style on both sides and substitute "[…]"
+  // placeholders with the corresponding content from the other side. This
+  // prevents the word-diff from flagging unchanged-by-elision passages.
+  const aligned = expandEllipsisAlignment(A, B);
+  A = aligned.left;
+  B = aligned.right;
 
   const parts = diffWordsWithSpace(A, B, { ignoreCase: false });
 
@@ -520,9 +680,21 @@ function renderRowArticle(row, idx) {
     leftCell = `<div class="cell left empty">sem correspondência no Anteprojeto</div>`;
   }
 
+  // Inline Art. 14.º revogação attribution. The synthesised revogação row was
+  // dropped during merge; its scope info lives on `row._revogScopes`. Pure
+  // revogação rows (mode === 'revogacao') already carry the citation in their
+  // body, so don't double-render the note there.
+  let revogNote = '';
+  if (row._revogScopes && row._revogScopes.length && row.mode !== 'revogacao') {
+    const inner = row._revogIsFull
+      ? 'integralmente revogado'
+      : row._revogScopes.map(s => escapeHTML(s)).join('; ');
+    revogNote = `<div class="cell-revog-note"><b>Revogado pelo art. 14.º da Proposta:</b> ${inner}</div>`;
+  }
+
   const rightCell = row.right
-    ? `<div class="cell right">${articleHeader(row.right, 'right')}<div class="cell-body">${rightHTML}</div></div>`
-    : `<div class="cell right empty">sem correspondência na Proposta de Lei</div>`;
+    ? `<div class="cell right">${articleHeader(row.right, 'right')}${revogNote}<div class="cell-body">${rightHTML}</div></div>`
+    : `<div class="cell right empty">${revogNote || 'sem correspondência na Proposta de Lei'}</div>`;
 
   const dipl = row.diploma?.key || 'NONE';
   return `<div class="${classes}" id="${ariaId}" data-diploma="${dipl}" data-status="${status}" data-mode="${row.mode || ''}">${leftCell}${rightCell}</div>`;
