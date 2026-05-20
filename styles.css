@@ -442,6 +442,19 @@ body {
 }
 .row.kind-article .cell.empty.placeholder-em-vigor::before { display: none; }
 
+/* Revogação placeholder: shown in Anteprojeto mode for revoked-article rows
+   where the Anteprojeto defers enumeration ("[···]"). */
+.row.kind-article .cell.empty.placeholder-revogacao:nth-child(1) {
+  border-left: 3px solid var(--accent-left);
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--paper) 0 10px,
+    rgba(138, 109, 44, 0.06) 10px 20px
+  );
+  color: var(--ink-2);
+}
+.row.kind-article .cell.empty.placeholder-revogacao::before { display: none; }
+
 /* === Cell headers === */
 .cell-header {
   display: flex;

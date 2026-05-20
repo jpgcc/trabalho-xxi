@@ -46,6 +46,284 @@ function emVigorPlaceholderText(row) {
   return 'texto em vigor não encontrado';
 }
 
+// ---------- Norma Revogatória expansion ----------
+// The Proposta's Artigo 14.º (Norma revogatória) bundles ~30 revocations across
+// 8 diplomas in a single row. We parse that text once on load and synthesise
+// one row per (diploma, article) so revocations are visible alongside the
+// modifications and aditamentos that affect the same diploma.
+
+const REVOG_DIPLOMA_PATTERNS = [
+  // Test more specific names first to avoid CT-substring trap.
+  [/Código de Processo do Trabalho/i, 'CPT'],
+  [/Código do Trabalho/i,              'CT'],
+  [/Decreto-Lei n\.º 102\/2000/i,      'DL102-2000'],
+  [/Decreto-Lei n\.º 187\/2007/i,      'DL187-2007'],
+  [/Decreto-Lei n\.º 91\/2009/i,       'DL91-2009'],
+  [/Decreto-Lei n\.º 259\/2009/i,      'DL259-2009'],
+  [/Lei n\.º 98\/2009/i,               'L98-2009'],
+];
+
+// Labels for diplomas not present in the existing dataset.
+const REVOG_NEW_DIPLOMA_LABELS = {
+  'L98-2009': 'Lei n.º 98/2009 — Acidentes de trabalho e doenças profissionais',
+};
+
+function normalizeArtNum(raw) {
+  // Tolerant: handles "33.º-B", "501-A.º" (source typo), "33.º", "33".
+  const m = String(raw).match(/^(\d+)(?:[.\-]?(?:º)?)?(?:-?([A-Z]))?(?:\.?º)?$/);
+  if (!m) return String(raw);
+  return m[2] ? `${m[1]}.º-${m[2]}` : `${m[1]}.º`;
+}
+
+function cleanRevogScope(s) {
+  let t = s;
+  t = t.replace(/\*([^*]+)\*/g, '$1');                 // *k)* → k)
+  t = t.replace(/\s+/g, ' ').trim();
+  t = t.replace(/^[,;]\s*/, '');                       // leading punctuation
+  t = t.replace(/^(e)(?:\s+|$)/i, '');                 // leading conjunction
+  t = t.replace(/^(o|a|os|as|ao|à)(?:\s+|$)/i, '');    // leading article
+  t = t.replace(/\s+(do|da|de)\s*$/i, '');             // trailing connector
+  t = t.trim();
+  return t || '(integralmente)';
+}
+
+// Some entries in the source text omit the "artigo" keyword before a bare
+// article-number token (e.g. "o 515.º-A" instead of "o artigo 515.º-A").
+// Repair those before scanning so the article-finder regex picks them up.
+function repairArticleRefs(text) {
+  return text.replace(/(\d+\.º(?:-[A-Z])?|\d+-[A-Z]\.º)/g, (match, _g1, offset, str) => {
+    const before = str.slice(Math.max(0, offset - 12), offset);
+    if (/artigo\s+$/i.test(before)) return match;             // already an artigo ref
+    if (/n\.\s*[º°]?\s*$/i.test(before)) return match;        // "n.º N" — paragraph
+    if (/alínea\s*\w?\)?\s*$/i.test(before)) return match;    // "alínea k)" etc
+    if (/subalínea\s*\w?\)?\s*$/i.test(before)) return match; // "subalínea iii)"
+    return 'artigo ' + match;
+  });
+}
+
+function extractRevogItems(text) {
+  // Returns Array<{ articleNum, scope }>. Each "artigo X.º" reference defines
+  // one item; the scope is the cleaned text between the previous match's end
+  // and this match's start.
+  const items = [];
+  const repaired = repairArticleRefs(text);
+  const ART_RE = /artigo\s+(\d+(?:\.º(?:-[A-Z])?|-[A-Z]\.º|\.?))/gi;
+  let lastEnd = 0;
+  let m;
+  while ((m = ART_RE.exec(repaired)) !== null) {
+    const before = repaired.slice(lastEnd, m.index);
+    items.push({
+      articleNum: normalizeArtNum(m[1]),
+      scope: cleanRevogScope(before),
+    });
+    lastEnd = m.index + m[0].length;
+  }
+  return items;
+}
+
+function parseRevogatoria(body) {
+  // Returns Map<diplomaKey, { items: Map<articleNum, string[]> }>
+  const out = new Map();
+  // Split on bullet markers "- *a)* "
+  const parts = body.split(/(?:^|\n)\s*-\s*\*[a-z]\)\*\s*/i).slice(1);
+  for (const raw of parts) {
+    // Identify diploma
+    let diplomaKey = null;
+    let diplomaIdx = -1;
+    for (const [re, key] of REVOG_DIPLOMA_PATTERNS) {
+      const mm = re.exec(raw);
+      if (mm && (diplomaIdx === -1 || mm.index < diplomaIdx)) {
+        diplomaKey = key;
+        diplomaIdx = mm.index;
+      }
+    }
+    if (!diplomaKey || diplomaIdx < 0) continue;
+    // Strip everything from the diploma name onwards (incl. trailing "do "/"da ")
+    let head = raw.slice(0, diplomaIdx).replace(/\s+(do|da)\s*$/i, '');
+    const items = extractRevogItems(head);
+    if (!items.length) continue;
+    const bucket = out.get(diplomaKey) || { items: new Map() };
+    for (const it of items) {
+      const arr = bucket.items.get(it.articleNum) || [];
+      arr.push(it.scope);
+      bucket.items.set(it.articleNum, arr);
+    }
+    out.set(diplomaKey, bucket);
+  }
+  return out;
+}
+
+function diplomaLabelFor(key) {
+  // Reuse the label already present on an existing row, else fall back to the
+  // hard-coded "new diploma" labels.
+  const r = DATA.rows.find(r => r.diploma?.key === key);
+  if (r?.diploma?.label) return r.diploma.label;
+  return REVOG_NEW_DIPLOMA_LABELS[key] || key;
+}
+
+function synthesizeRevogRows(key, label, items) {
+  const banner = {
+    kind: 'group-banner',
+    diploma: { key, label, mode: 'revogacao' },
+    mode: 'revogacao',
+    left: null,
+    right: {
+      type: 'group-banner',
+      propostaArtNum: '14.º',
+      title: `Artigo 14.º — Revogação no ${label}`,
+      subtitle: `Revogação no ${label}`,
+      diploma: { key, label, mode: 'revogacao' },
+      mode: 'revogacao',
+      side: 'right',
+      body: `Revogações operadas pelo artigo 14.º da Proposta no ${label}.`,
+    },
+  };
+  // Sort article rows by numeric article number (then suffix letter)
+  const sortedNums = [...items.keys()].sort((a, b) => {
+    const pa = a.match(/^(\d+)\.º(?:-([A-Z]))?$/);
+    const pb = b.match(/^(\d+)\.º(?:-([A-Z]))?$/);
+    if (!pa || !pb) return a.localeCompare(b);
+    if (+pa[1] !== +pb[1]) return +pa[1] - +pb[1];
+    return (pa[2] || '').localeCompare(pb[2] || '');
+  });
+  const articleRows = sortedNums.map(num => {
+    const scopes = items.get(num);
+    const isFull = scopes.length === 1 && scopes[0] === '(integralmente)';
+    const body = isFull
+      ? '[Revogado pelo art. 14.º da Proposta]'
+      : `Revogados pelo art. 14.º da Proposta:\n\n${scopes.map(s => `- ${s}`).join('\n')}`;
+    return {
+      kind: 'article',
+      diploma: { key, label, mode: 'revogacao' },
+      mode: 'revogacao',
+      left: null,
+      right: {
+        articleNum: num,
+        subtitle: isFull ? 'Revogação' : 'Revogação parcial',
+        body,
+        diploma: { key, label, mode: 'revogacao' },
+      },
+    };
+  });
+  return [banner, ...articleRows];
+}
+
+function expandRevogatoria() {
+  if (DATA.__revogExpanded) return;
+  DATA.__revogExpanded = true;
+
+  const revRow = DATA.rows.find(r => r.kind === 'revogatoria');
+  if (!revRow || !revRow.right?.body) return;
+
+  const parsed = parseRevogatoria(revRow.right.body);
+  if (parsed.size === 0) return;
+
+  // Last index in DATA.rows where each diploma already appears.
+  const lastIdxByDiploma = new Map();
+  DATA.rows.forEach((r, i) => {
+    if (r.diploma?.key) lastIdxByDiploma.set(r.diploma.key, i);
+  });
+  // Diplomas not yet in the dataset go just before the revogatoria/aplicacao tail.
+  const tailIdx = DATA.rows.findIndex(r => r.kind === 'revogatoria');
+
+  const inserts = [];
+  for (const [key, { items }] of parsed) {
+    const label = diplomaLabelFor(key);
+    const rows = synthesizeRevogRows(key, label, items);
+    const at = lastIdxByDiploma.has(key) ? lastIdxByDiploma.get(key) + 1 : tailIdx;
+    inserts.push({ at, rows });
+  }
+  // Splice in reverse order so earlier inserts don't shift later ones.
+  inserts.sort((a, b) => b.at - a.at);
+  for (const ins of inserts) DATA.rows.splice(ins.at, 0, ...ins.rows);
+}
+
+expandRevogatoria();
+
+// ---------- Per-diploma merge ----------
+// After expansion, each diploma can have up to three sub-sections (Alteração,
+// Aditamento, Revogação). Collapse them into a single section per diploma,
+// with article rows sorted by numeric article number. The merged banner shows
+// aggregated counts (alterados / aditados / revogados).
+
+function articleNumSortKey(num) {
+  const m = String(num || '').match(/^(\d+)\.º(?:-([A-Z]))?$/);
+  if (!m) return [Number.MAX_SAFE_INTEGER, num || ''];
+  return [+m[1], m[2] || ''];
+}
+
+function compareArticleNums(a, b) {
+  const [ai, as] = articleNumSortKey(a);
+  const [bi, bs] = articleNumSortKey(b);
+  if (ai !== bi) return ai - bi;
+  return as.localeCompare(bs);
+}
+
+function makeMergedBanner(key, label) {
+  return {
+    kind: 'group-banner',
+    diploma: { key, label },
+    mode: 'merged',
+    left: null,
+    right: {
+      type: 'group-banner',
+      title: label,
+      subtitle: label,
+      diploma: { key, label },
+      side: 'right',
+      body: '',
+    },
+  };
+}
+
+function mergeDiplomaSections() {
+  if (DATA.__merged) return;
+  DATA.__merged = true;
+
+  const diplomaOrder = [];
+  const seen = new Set();
+  const diplomaInfo = new Map(); // key → { label, articles: row[] }
+  const headRows = []; // preamble, objeto
+  const tailRows = []; // revogatoria (hidden), aplicacao
+  const other   = []; // anything else (defensive)
+
+  for (const r of DATA.rows) {
+    if (r.kind === 'preamble' || r.kind === 'objeto') { headRows.push(r); continue; }
+    if (r.kind === 'revogatoria' || r.kind === 'aplicacao') { tailRows.push(r); continue; }
+    if (r.diploma?.key) {
+      const k = r.diploma.key;
+      if (!seen.has(k)) {
+        seen.add(k);
+        diplomaOrder.push(k);
+        diplomaInfo.set(k, { label: r.diploma.label, articles: [] });
+      }
+      if (r.kind === 'article') diplomaInfo.get(k).articles.push(r);
+      // group-banner rows are dropped; we synthesise one merged banner per diploma
+      continue;
+    }
+    other.push(r);
+  }
+
+  for (const [, info] of diplomaInfo) {
+    info.articles.sort((a, b) => compareArticleNums(
+      a.right?.articleNum || a.left?.articleNum,
+      b.right?.articleNum || b.left?.articleNum,
+    ));
+  }
+
+  const newRows = [...headRows];
+  for (const k of diplomaOrder) {
+    const info = diplomaInfo.get(k);
+    if (!info.articles.length) continue;
+    newRows.push(makeMergedBanner(k, info.label));
+    newRows.push(...info.articles);
+  }
+  newRows.push(...tailRows, ...other);
+  DATA.rows = newRows;
+}
+
+mergeDiplomaSections();
+
 // ---------- Helpers ----------
 function normalizeEllipsis(s) {
   if (!s) return '';
@@ -236,6 +514,8 @@ function renderRowArticle(row, idx) {
     leftCell = `<div class="cell left">${articleHeader(left, 'left')}<div class="cell-body">${leftHTML}</div></div>`;
   } else if (leftSource === 'em-vigor' && row.kind === 'article') {
     leftCell = `<div class="cell left empty placeholder-em-vigor">${emVigorPlaceholderText(row)}</div>`;
+  } else if (row.mode === 'revogacao') {
+    leftCell = `<div class="cell left empty placeholder-revogacao">revogação não enumerada no Anteprojeto</div>`;
   } else {
     leftCell = `<div class="cell left empty">sem correspondência no Anteprojeto</div>`;
   }
@@ -287,11 +567,19 @@ function renderRowPreamble(row, idx) {
 }
 
 function diplomaArticleStats(rows, dKey, mode) {
-  let total = 0, changed = 0, added = 0, removed = 0;
+  // When mode is 'merged' (or undefined), count across ALL modes for this
+  // diploma. Otherwise filter by the given mode.
+  let total = 0, changed = 0, added = 0, removed = 0, revoked = 0;
   rows.forEach(r => {
     if (r.kind !== 'article') return;
     if (r.diploma?.key !== dKey) return;
-    if (r.mode !== mode) return;
+    if (mode && mode !== 'merged' && r.mode !== mode) return;
+    // Revogação rows: counted as revoked regardless of diff status.
+    if (r.mode === 'revogacao') {
+      total++;
+      revoked++;
+      return;
+    }
     const s = articleStatus(effectiveLeft(r), r.right);
     if (s === 'identical') return;
     total++;
@@ -299,30 +587,46 @@ function diplomaArticleStats(rows, dKey, mode) {
     else if (s === 'right-only') added++;
     else if (s === 'left-only') removed++;
   });
-  return { total, changed, added, removed };
+  return { total, changed, added, removed, revoked };
 }
 
 function renderSectionBanner(row, idx) {
   const d = row.diploma;
-  const mode = row.mode;
+  const mode = row.mode || 'merged';
   const stats = diplomaArticleStats(DATA.rows, d.key, mode);
-  const kicker = mode === 'addition' ? 'Aditamento' : 'Alteração';
-  const dotColor = mode === 'addition' ? 'var(--add-rule)' : 'var(--accent-right)';
+  const isMerged = mode === 'merged';
 
-  const left = row.left, right = row.right;
-  const leftArt = left ? `Art. ${left.propostaArtNum}` : '—';
-  const rightArt = right ? `Art. ${right.propostaArtNum}` : '—';
+  const kicker = isMerged ? d.key
+              : mode === 'addition' ? 'Aditamento'
+              : mode === 'revogacao' ? 'Revogação'
+              : 'Alteração';
+  const dotColor = isMerged ? 'var(--accent-right)'
+              : mode === 'addition' ? 'var(--add-rule)'
+              : mode === 'revogacao' ? 'var(--del-rule)'
+              : 'var(--accent-right)';
+
+  let refLine;
+  if (isMerged) {
+    refLine = kicker;
+  } else {
+    const leftArt = row.left ? `Art. ${row.left.propostaArtNum}` : '—';
+    const rightArt = row.right ? `Art. ${row.right.propostaArtNum}` : '—';
+    refLine = mode === 'revogacao'
+      ? `${kicker} · Proposta ${rightArt}`
+      : `${kicker} · Anteprojeto ${leftArt} · Proposta ${rightArt}`;
+  }
 
   return `
     <div class="row kind-section is-section ${stats.total === 0 ? 'is-empty-section' : ''}" id="r-${idx}" data-diploma="${d.key}" data-mode="${mode}">
       <div class="section-banner">
-        <div class="section-banner-kicker"><span class="section-banner-dot" style="background:${dotColor}"></span>${kicker} · Anteprojeto ${leftArt} · Proposta ${rightArt}</div>
+        <div class="section-banner-kicker"><span class="section-banner-dot" style="background:${dotColor}"></span>${refLine}</div>
         <div class="section-banner-title">${escapeHTML(d.label)}</div>
         <div class="section-banner-stats">
           <span><b>${stats.total}</b> artigo${stats.total === 1 ? '' : 's'}</span>
           ${stats.changed ? `<span><span class="pip" style="background:#B8651E"></span><b>${stats.changed}</b> alterado${stats.changed === 1 ? '' : 's'}</span>` : ''}
-          ${stats.added ? `<span><span class="pip" style="background:var(--add-rule)"></span><b>${stats.added}</b> só na proposta</span>` : ''}
+          ${stats.added ? `<span><span class="pip" style="background:var(--add-rule)"></span><b>${stats.added}</b> aditado${stats.added === 1 ? '' : 's'}</span>` : ''}
           ${stats.removed ? `<span><span class="pip" style="background:var(--del-rule)"></span><b>${stats.removed}</b> só no anteprojeto</span>` : ''}
+          ${stats.revoked ? `<span><span class="pip" style="background:var(--del-rule)"></span><b>${stats.revoked}</b> revogado${stats.revoked === 1 ? '' : 's'}</span>` : ''}
         </div>
       </div>
     </div>`;
@@ -339,7 +643,8 @@ function build() {
     else if (row.kind === 'article') {
       html += renderRowArticle(row, idx);
     }
-    else if (row.kind === 'revogatoria') html += renderRowToplevel(row, 'revogatoria', idx);
+    // The bundled revogatoria row has been expanded per-diploma — skip it.
+    else if (row.kind === 'revogatoria') { /* hidden */ }
     else if (row.kind === 'aplicacao') html += renderRowToplevel(row, 'aplicacao', idx);
   });
   gridEl.innerHTML = html;
@@ -364,47 +669,52 @@ function buildTOC() {
     </div>`;
   }
 
-  // For each group banner, list its articles
+  // For each group banner (one per diploma after merging), list its articles
   DATA.rows.forEach((row, idx) => {
-    if (row.kind === 'group-banner') {
-      const stats = diplomaArticleStats(DATA.rows, row.diploma.key, row.mode);
-      const modeTag = row.mode === 'addition' ? 'Aditamento' : 'Alteração';
-      const dotColor = row.mode === 'addition' ? 'var(--add-rule)' : 'var(--accent-right)';
-      html += `<div class="toc-section toc-collapsible">
-        <div class="toc-section-head toc-section-toggle" data-target="r-${idx}">
-          <span class="toc-section-dot" style="background:${dotColor}"></span>
-          ${row.diploma.key} · ${modeTag}
-          <span class="toc-section-count">${stats.total}</span>
-          <span class="toc-chevron" aria-hidden="true">▾</span>
-        </div>
-        <div class="toc-items">`;
-      DATA.rows.forEach((r2, i2) => {
-        if (r2.kind !== 'article') return;
-        if (r2.diploma?.key !== row.diploma.key) return;
-        if (r2.mode !== row.mode) return;
-        const r2Left = effectiveLeft(r2);
-        const status = articleStatus(r2Left, r2.right);
-        const sample = r2.right || r2Left;
-        const sub = r2.right?.subtitle || r2Left?.subtitle || '';
-        const num = sample?.articleNum || '';
-        let tag = '';
-        if (status === 'changed') tag = '<span class="toc-tag changed">±</span>';
-        else if (status === 'right-only') tag = '<span class="toc-tag added">+</span>';
-        else if (status === 'left-only') tag = '<span class="toc-tag removed">−</span>';
-        html += `<div class="toc-item" data-target="r-${i2}" data-status="${status}">
-          <span class="toc-num">${escapeHTML(num)}</span>
-          <span class="toc-label">${escapeHTML(sub)}</span>
-          ${tag}
-        </div>`;
-      });
-      html += `</div></div>`;
-    }
+    if (row.kind !== 'group-banner') return;
+    const isMerged = row.mode === 'merged' || !row.mode;
+    const stats = diplomaArticleStats(DATA.rows, row.diploma.key, row.mode);
+    const dotColor = isMerged ? 'var(--accent-right)'
+                  : row.mode === 'addition' ? 'var(--add-rule)'
+                  : row.mode === 'revogacao' ? 'var(--del-rule)'
+                  : 'var(--accent-right)';
+    const heading = isMerged
+      ? `${row.diploma.key}`
+      : `${row.diploma.key} · ${row.mode === 'addition' ? 'Aditamento' : row.mode === 'revogacao' ? 'Revogação' : 'Alteração'}`;
+    html += `<div class="toc-section toc-collapsible">
+      <div class="toc-section-head toc-section-toggle" data-target="r-${idx}">
+        <span class="toc-section-dot" style="background:${dotColor}"></span>
+        ${heading}
+        <span class="toc-section-count">${stats.total}</span>
+        <span class="toc-chevron" aria-hidden="true">▾</span>
+      </div>
+      <div class="toc-items">`;
+    DATA.rows.forEach((r2, i2) => {
+      if (r2.kind !== 'article') return;
+      if (r2.diploma?.key !== row.diploma.key) return;
+      if (!isMerged && r2.mode !== row.mode) return;
+      const r2Left = effectiveLeft(r2);
+      const status = articleStatus(r2Left, r2.right);
+      const sample = r2.right || r2Left;
+      const sub = r2.right?.subtitle || r2Left?.subtitle || '';
+      const num = sample?.articleNum || '';
+      let tag = '';
+      if (r2.mode === 'revogacao') tag = '<span class="toc-tag removed">−</span>';
+      else if (status === 'changed') tag = '<span class="toc-tag changed">±</span>';
+      else if (status === 'right-only') tag = '<span class="toc-tag added">+</span>';
+      else if (status === 'left-only') tag = '<span class="toc-tag removed">−</span>';
+      html += `<div class="toc-item" data-target="r-${i2}" data-status="${status}">
+        <span class="toc-num">${escapeHTML(num)}</span>
+        <span class="toc-label">${escapeHTML(sub)}</span>
+        ${tag}
+      </div>`;
+    });
+    html += `</div></div>`;
   });
 
-  // Final
-  const revIdx = DATA.rows.findIndex(r => r.kind === 'revogatoria');
+  // Final — the bundled revogatoria row is hidden; per-diploma "Revogação"
+  // sub-sections cover it.
   const aplIdx = DATA.rows.findIndex(r => r.kind === 'aplicacao');
-  if (revIdx >= 0) html += `<div class="toc-section"><div class="toc-section-head" data-target="r-${revIdx}"><span class="toc-section-dot"></span>Norma revogatória</div></div>`;
   if (aplIdx >= 0) html += `<div class="toc-section"><div class="toc-section-head" data-target="r-${aplIdx}"><span class="toc-section-dot"></span>Aplicação no tempo</div></div>`;
 
   tocEl.innerHTML = html;
